@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+  - package-ecosystem: "npm"
+    directory: "/client"
+    schedule:
+      interval: "weekly"
+
+# Advisory GHSA-848j-6mx2-7j84 (CVE-2025-14505) affects elliptic <=6.6.1.
+# There is no patched release upstream: the library is unmaintained, and the
+# flagged code path (ECDSA nonces with leading zeros) only matters for
+# *signing* with user-controlled nonces. This repo never signs anything —
+# elliptic arrives only through Hardhat's ethers v5 dev toolchain and is
+# unused at runtime. Disabling the alert here instead of leaving it open.
+ignore:
+  - dependency-name: "elliptic"
+    # This rule applies to every version of elliptic because no fixed version
+    # exists; revisit if a patched release (>=6.6.2) is published.
+    versions: ["<6.6.2"]
