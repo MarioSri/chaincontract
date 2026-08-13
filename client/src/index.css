@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+/*
+ * Chain Contract — "Ledger Ink" design system
+ * Paper-light background, deep ink text, signature oxidized-copper accent,
+ * mint status tones. Monospace for addresses, hashes, and amounts —
+ * everything on-chain reads like a ledger.
+ */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-ink: oklch(0.24 0.02 260);
+  --color-paper: oklch(0.985 0.005 85);
+  --color-paper-2: oklch(0.96 0.008 85);
+  --color-copper: oklch(0.62 0.14 55);
+  --color-copper-strong: oklch(0.55 0.16 55);
+  --color-mint: oklch(0.72 0.13 165);
+  --color-amber-warn: oklch(0.75 0.14 75);
+  --color-line: oklch(0.9 0.01 85);
+  --color-ink-soft: oklch(0.45 0.02 260);
+}
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+}

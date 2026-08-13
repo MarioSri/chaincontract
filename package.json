@@ -1,0 +1,41 @@
+{
+  "name": "chaincontract",
+  "version": "1.0.0",
+  "description": "Milestone-based decentralized freelancer payment system with Solidity on-chain escrow. Client funds, freelancer delivers, funds release on approval.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js --network local",
+    "client:dev": "npm --prefix client run dev",
+    "client:build": "npm --prefix client run build"
+  },
+  "keywords": ["solidity", "ethereum", "escrow", "web3"],
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^3.0.0",
+    "@nomicfoundation/hardhat-ethers": "^4.0.15",
+    "@nomicfoundation/hardhat-ethers-chai-matchers": "^3.0.11",
+    "@nomicfoundation/hardhat-ignition": "^3.1.8",
+    "@nomicfoundation/hardhat-ignition-ethers": "^3.1.6",
+    "@nomicfoundation/hardhat-keystore": "^3.0.13",
+    "@nomicfoundation/hardhat-mocha": "^3.1.0",
+    "@nomicfoundation/hardhat-network-helpers": "^3.0.11",
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^3.0.7",
+    "@nomicfoundation/hardhat-typechain": "^3.1.1",
+    "@nomicfoundation/hardhat-verify": "^3.0.22",
+    "@nomicfoundation/ignition-core": "^3.1.9",
+    "@tailwindcss/vite": "^4.3.3",
+    "chai": "^6.2.2",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.13.0",
+    "mocha": "^11.8.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "type": "module",
+  "dependencies": {
+    "web3": "^4.16.0"
+  }
+}
