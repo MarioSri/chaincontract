@@ -40,7 +40,8 @@ export async function getWeb3(): Promise<Web3 | null> {
 }
 
 export function contractAddress(chainId: number): string | undefined {
-  return addresses[String(chainId)] ?? addresses["31337"];
+  const map = addresses as Record<string, string>;
+  return map[String(chainId)] ?? map["31337"];
 }
 
 export class EscrowClient {

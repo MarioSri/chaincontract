@@ -7,7 +7,6 @@ import artifact from "./abi/MilestoneEscrow.json";
 import addresses from "./abi/address.json";
 import {
   AGREEMENT_STATE,
-  EscrowClient,
   MILESTONE_STATE,
   formatEth,
   short,
@@ -15,15 +14,8 @@ import {
   type MilestoneView,
 } from "./lib/chain";
 
-type Account = { address: string; role: "client" | "freelancer" };
 
 type LogEntry = { id: number; text: string; kind: "info" | "ok" | "err" };
-
-const KNOWN_PRIVATE_KEYS = [
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // #0
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // #1
-  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a", // #2
-];
 
 const PRIVATE_KEY_NAMES: Record<string, string> = {
   "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": "Client (acct #0)",
@@ -36,7 +28,6 @@ export default function App() {
   const [chainId, setChainId] = useState<number>(31337);
   const [accounts, setAccounts] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [escrow, setEscrow] = useState<EscrowClient | null>(null);
   const [agreementId, setAgreementId] = useState<string>("1");
   const [summary, setSummary] = useState<AgreementSummary | null>(null);
   const [milestones, setMilestones] = useState<MilestoneView[]>([]);
@@ -85,14 +76,13 @@ export default function App() {
   // Build the contract binding whenever web3/selected/address changes.
   useEffect(() => {
     if (!web3 || !address) return;
-    setEscrow(new EscrowClient(web3, address));
     log(`Bound MilestoneEscrow @ ${short(address)} on chain ${chainId}`);
   }, [web3, address, chainId, log]);
 
   const contract = useMemo(() => {
     if (!web3 || !address) return null;
     return new web3.eth.Contract(artifact.abi as never[], address) as unknown as {
-      methods: Record<string, (...args: never[]) => { call: () => Promise<unknown>; send: (opts: never) => Promise<unknown> }>;
+      methods: Record<string, ((...args: unknown[]) => unknown)>;
     };
   }, [web3, address]);
 
@@ -100,20 +90,24 @@ export default function App() {
     if (!contract || !agreementId) return;
     try {
       const id = BigInt(agreementId);
-      const s = (await contract.methods.getAgreement(id).call()) as unknown as AgreementSummary;
+      const callS = await (contract.methods.getAgreement as unknown as (a0: unknown) => { call: () => Promise<unknown> })(id);
+      const s = (await callS.call()) as unknown as AgreementSummary;
       const ms: MilestoneView[] = [];
       for (let i = 0; i < Number(s.milestoneCount); i++) {
-        const m = (await contract.methods.getMilestone(id, BigInt(i)).call()) as unknown as MilestoneView;
+        const callM = await (contract.methods.getMilestone as unknown as (a0: unknown, a1: unknown) => { call: () => Promise<unknown> })(id, BigInt(i));
+        const m = (await callM.call()) as unknown as MilestoneView;
         ms.push(m);
       }
       setSummary(s);
       setMilestones(ms);
-      const w = await contract.methods.withdrawable(selected).call();
-      setWithdrawable(BigInt(w as string));
+      const callW = await (contract.methods.withdrawable as unknown as (a0: unknown) => { call: () => Promise<unknown> })(selected);
+      const w = await callW.call();
+      setWithdrawable(BigInt(w as unknown as string));
       const bal = await web3!.eth.getBalance(selected);
-      setBalance(BigInt(bal as string));
-      const bf = await contract.methods.withdrawable(s.freelancer).call();
-      setBalanceOfFreelancer(BigInt(bf as string));
+      setBalance(BigInt(bal as unknown as string));
+      const callBf = await (contract.methods.withdrawable as unknown as (a0: unknown) => { call: () => Promise<unknown> })(s.freelancer);
+      const bf = await callBf.call();
+      setBalanceOfFreelancer(BigInt(bf as unknown as string));
     } catch (e) {
       log(`Agreement ${agreementId} not found or unreadable: ${e}`, "err");
     }
@@ -248,8 +242,10 @@ export default function App() {
                       disabled={!!pending}
                       onClick={() =>
                         run("createAgreement", async () => {
-                          const tx = (await contract.methods
-                            .createAgreement(
+                          const c0 = contract ?? ({} as never);
+                          const tx = await (c0.methods.createAgreement as unknown as (
+                            a0: unknown, a1: unknown, a2: unknown, a3: unknown, a4: unknown
+                          ) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(
                               "Website rebuild",
                               "Full rebuild of the marketing site in three milestones.",
                               accounts[2] ?? accounts[0],
@@ -259,17 +255,18 @@ export default function App() {
                                 Web3.utils.toWei("2", "ether"),
                                 Web3.utils.toWei("1", "ether"),
                               ],
-                            )
-                            .send({
+                          );
+                          const receipt = await tx.send({
                               from: selected,
                               value: Web3.utils.toWei("4", "ether"),
-                            })) as unknown as {
+                            });
+                          const events = (receipt as never) as {
                             events?: {
                               AgreementCreated?: { returnValues: { id: string } };
                             };
                           };
                           const created =
-                            tx.events?.AgreementCreated?.returnValues?.id;
+                            events.events?.AgreementCreated?.returnValues?.id;
                           if (created) {
                             setAgreementId(created);
                           } else {
@@ -339,19 +336,21 @@ export default function App() {
                       onClick={() =>
                         run("createAgreement", async () => {
                           // preset: 3 milestones funded in one tx
-                          const tx = (await contract.methods
-                            .createAgreement(
+                          const c0 = contract ?? ({} as never);
+                          const tx = await (c0.methods.createAgreement as unknown as (
+                            a0: unknown, a1: unknown, a2: unknown, a3: unknown, a4: unknown
+                          ) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(
                               "Website rebuild",
                               "Full rebuild of the marketing site in three milestones.",
                               isFreelancer ? selected : accounts[2] ?? selected,
                               ["Design mockups", "Frontend implementation", "QA and handover"],
                               [Web3.utils.toWei("1", "ether"), Web3.utils.toWei("2", "ether"), Web3.utils.toWei("1", "ether")],
-                            )
-                            .send({
+                          );
+                          const receipt = await tx.send({
                               from: selected,
                               value: Web3.utils.toWei("4", "ether"),
-                            })) as unknown as { events?: Record<string, unknown> };
-                          const e = tx.events as never;
+                            });
+                          const e = receipt as never;
                           const created = (e as { AgreementCreated?: { returnValues: { id: string } } })?.AgreementCreated?.returnValues?.id;
                           if (created) setAgreementId(created);
                         })
@@ -363,11 +362,10 @@ export default function App() {
                       label={`Fund escrow ${formatEth(summary.total - summary.escrowed)}`}
                       disabled={!!pending}
                       onClick={() =>
-                        run("fundAgreement", () =>
-                          contract.methods
-                            .fundAgreement(agreementId)
-                            .send({ from: selected, value: String(summary.total - summary.escrowed) }),
-                        )
+                        run("fundAgreement", async () => {
+                          const txF = await ((contract ?? { methods: {} } as never).methods.fundAgreement as unknown as (a0: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId);
+                          await txF.send({ from: selected, value: String(summary.total - summary.escrowed) });
+                        })
                       }
                     />
                   )}
@@ -381,11 +379,11 @@ export default function App() {
                               label={`Complete #${i + 1}`}
                               disabled={!!pending}
                               onClick={() =>
-                                run(`completeMilestone #${i + 1}`, () =>
-                                  contract.methods
-                                    .completeMilestone(agreementId, BigInt(i))
-                                    .send({ from: selected }),
-                                )
+                                run(`completeMilestone #${i + 1}`, async () => {
+                                  const cBase = (contract ?? { methods: {} } as never);
+                                  const txC = await (cBase.methods.completeMilestone as unknown as (a0: unknown, a1: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId, BigInt(i));
+                                  await txC.send({ from: selected });
+                                })
                               }
                             />
                           ),
@@ -403,11 +401,10 @@ export default function App() {
                               primary
                               disabled={!!pending}
                               onClick={() =>
-                                run(`approveMilestone #${i + 1}`, () =>
-                                  contract.methods
-                                    .approveMilestone(agreementId, BigInt(i))
-                                    .send({ from: selected }),
-                                )
+                                run(`approveMilestone #${i + 1}`, async () => {
+                                  const txP = await ((contract ?? { methods: {} } as never).methods.approveMilestone as unknown as (a0: unknown, a1: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId, BigInt(i));
+                                  await txP.send({ from: selected });
+                                })
                               }
                             />
                           ),
@@ -420,11 +417,10 @@ export default function App() {
                               label={`Request revision #${i + 1}`}
                               disabled={!!pending}
                               onClick={() =>
-                                run(`requestRevision #${i + 1}`, () =>
-                                  contract.methods
-                                    .requestRevision(agreementId, BigInt(i))
-                                    .send({ from: selected }),
-                                )
+                                run(`requestRevision #${i + 1}`, async () => {
+                                  const txR = await ((contract ?? { methods: {} } as never).methods.requestRevision as unknown as (a0: unknown, a1: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId, BigInt(i));
+                                  await txR.send({ from: selected });
+                                })
                               }
                             />
                           ),
@@ -434,9 +430,10 @@ export default function App() {
                         danger
                         disabled={!!pending || summary.approved > 0n}
                         onClick={() =>
-                          run("abort", () =>
-                            contract.methods.abort(agreementId).send({ from: selected }),
-                          )
+                          run("abort", async () => {
+                            const txA = await (contract!.methods.abort as unknown as (a0: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId);
+                          await txA.send({ from: selected });
+                          })
                         }
                       />
                       {!disputed && (
@@ -445,9 +442,10 @@ export default function App() {
                           danger
                           disabled={!!pending}
                           onClick={() =>
-                            run("dispute", () =>
-                              contract.methods.dispute(agreementId).send({ from: selected }),
-                            )
+                            run("dispute", async () => {
+                              const txD = await (contract!.methods.dispute as unknown as (a0: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId);
+                              await txD.send({ from: selected });
+                            })
                           }
                         />
                       )}
@@ -459,9 +457,10 @@ export default function App() {
                       danger
                       disabled={!!pending}
                       onClick={() =>
-                        run("dispute", () =>
-                          contract.methods.dispute(agreementId).send({ from: selected }),
-                        )
+                          run("dispute", async () => {
+                          const txD = await (contract!.methods.dispute as unknown as (a0: unknown) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(agreementId);
+                          await txD.send({ from: selected });
+                        })
                       }
                     />
                   )}
@@ -471,9 +470,10 @@ export default function App() {
                       primary
                       disabled={!!pending}
                       onClick={() =>
-                        run("withdraw", () =>
-                          contract.methods.withdraw().send({ from: selected }),
-                        )
+                        run("withdraw", async () => {
+                          const txW1 = await (contract!.methods.withdraw as unknown as () => Promise<{ send: (o: unknown) => Promise<unknown> }>)();
+                          await txW1.send({ from: selected });
+                        })
                       }
                     />
                   )}
@@ -483,9 +483,10 @@ export default function App() {
                       primary
                       disabled={!!pending}
                       onClick={() =>
-                        run("withdraw", () =>
-                          contract.methods.withdraw().send({ from: summary!.freelancer }),
-                        )
+                        run("withdraw", async () => {
+                          const txW2 = await (contract!.methods.withdraw as unknown as () => Promise<{ send: (o: unknown) => Promise<unknown> }>)();
+                          await txW2.send({ from: summary!.freelancer });
+                        })
                       }
                     />
                   )}
