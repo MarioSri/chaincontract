@@ -1,7 +1,7 @@
 // Chain Contract — "Ledger Ink" UI
 // Paper background, ink text, copper accent, mint approvals, mono ledger rows.
 // Every on-chain value renders in IBM Plex Mono like a ledger line.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Web3 } from "web3";
 import artifact from "./abi/MilestoneEscrow.json";
 import addresses from "./abi/address.json";
@@ -16,6 +16,14 @@ import {
 
 
 type LogEntry = { id: number; text: string; kind: "info" | "ok" | "err" };
+type DraftMilestone = { title: string; amount: string };
+type AgreementDraft = {
+  title: string;
+  description: string;
+  freelancer: string;
+  initialFunding: string;
+  milestones: DraftMilestone[];
+};
 
 const PRIVATE_KEY_NAMES: Record<string, string> = {
   "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": "Client (acct #0)",
@@ -28,7 +36,7 @@ export default function App() {
   const [chainId, setChainId] = useState<number>(31337);
   const [accounts, setAccounts] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [agreementId, setAgreementId] = useState<string>("1");
+  const [agreementId, setAgreementId] = useState<string>("");
   const [summary, setSummary] = useState<AgreementSummary | null>(null);
   const [milestones, setMilestones] = useState<MilestoneView[]>([]);
   const [withdrawable, setWithdrawable] = useState<bigint>(0n);
@@ -36,6 +44,7 @@ export default function App() {
   const [balanceOfFreelancer, setBalanceOfFreelancer] = useState<bigint>(0n);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [pending, setPending] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const logId = useRef(0);
 
   const address = useMemo(() => {
@@ -86,10 +95,30 @@ export default function App() {
     };
   }, [web3, address]);
 
-  const loadAgreement = useCallback(async () => {
-    if (!contract || !agreementId) return;
+  const loadAgreement = useCallback(async (requestedId = agreementId) => {
+    if (!contract || !selected) return;
     try {
-      const id = BigInt(agreementId);
+      const bal = await web3!.eth.getBalance(selected);
+      setBalance(BigInt(bal as unknown as string));
+      if (!requestedId) {
+        setSummary(null);
+        setMilestones([]);
+        setWithdrawable(0n);
+        setBalanceOfFreelancer(0n);
+        return;
+      }
+      const id = BigInt(requestedId);
+      const countCall = await (contract.methods.agreementCount as unknown as () => {
+        call: () => Promise<unknown>;
+      })();
+      const agreementCount = BigInt((await countCall.call()) as string);
+      if (id === 0n || id > agreementCount) {
+        setSummary(null);
+        setMilestones([]);
+        setWithdrawable(0n);
+        setBalanceOfFreelancer(0n);
+        return;
+      }
       const callS = await (contract.methods.getAgreement as unknown as (a0: unknown) => { call: () => Promise<unknown> })(id);
       const s = (await callS.call()) as unknown as AgreementSummary;
       const ms: MilestoneView[] = [];
@@ -103,13 +132,15 @@ export default function App() {
       const callW = await (contract.methods.withdrawable as unknown as (a0: unknown) => { call: () => Promise<unknown> })(selected);
       const w = await callW.call();
       setWithdrawable(BigInt(w as unknown as string));
-      const bal = await web3!.eth.getBalance(selected);
-      setBalance(BigInt(bal as unknown as string));
       const callBf = await (contract.methods.withdrawable as unknown as (a0: unknown) => { call: () => Promise<unknown> })(s.freelancer);
       const bf = await callBf.call();
       setBalanceOfFreelancer(BigInt(bf as unknown as string));
     } catch (e) {
-      log(`Agreement ${agreementId} not found or unreadable: ${e}`, "err");
+      setSummary(null);
+      setMilestones([]);
+      setWithdrawable(0n);
+      setBalanceOfFreelancer(0n);
+      log(`Agreement ${requestedId} could not be read: ${e}`, "err");
     }
   }, [contract, agreementId, selected, web3, log]);
 
@@ -122,9 +153,14 @@ export default function App() {
       if (pending) return;
       setPending(label);
       try {
-        await fn();
+        const result = await fn();
         log(`${label} — confirmed on chain`, "ok");
-        await loadAgreement();
+        if (typeof result === "string" && /^\d+$/.test(result)) {
+          setAgreementId(result);
+          await loadAgreement(result);
+        } else {
+          await loadAgreement();
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log(`${label} failed: ${msg.slice(0, 200)}`, "err");
@@ -139,6 +175,37 @@ export default function App() {
   const isFreelancer = summary?.freelancer.toLowerCase() === selected.toLowerCase();
   const stateName = summary ? AGREEMENT_STATE[Number(summary.state)] ?? `#${summary.state}` : "";
   const disputed = summary?.disputed;
+
+  const createAgreementFromDraft = useCallback(
+    (draft: AgreementDraft) => {
+      run("createAgreement", async () => {
+        if (!contract || !selected) throw new Error("Connect a wallet account before creating an agreement.");
+        const amounts = draft.milestones.map((milestone) => Web3.utils.toWei(milestone.amount, "ether"));
+        const total = amounts.reduce((sum, amount) => sum + BigInt(amount), 0n);
+        const initialFunding = BigInt(Web3.utils.toWei(draft.initialFunding, "ether"));
+        if (total === 0n || initialFunding === 0n || initialFunding > total) {
+          throw new Error("Initial escrow must be greater than zero and cannot exceed the milestone total.");
+        }
+        const create = contract.methods.createAgreement as unknown as (
+          a0: unknown, a1: unknown, a2: unknown, a3: unknown, a4: unknown,
+        ) => Promise<{ send: (options: unknown) => Promise<unknown> }>;
+        const tx = await create(
+          draft.title.trim(),
+          draft.description.trim(),
+          draft.freelancer.trim(),
+          draft.milestones.map((milestone) => milestone.title.trim()),
+          amounts,
+        );
+        await tx.send({ from: selected, value: String(initialFunding) });
+        const count = await (contract.methods.agreementCount as unknown as () => {
+          call: () => Promise<unknown>;
+        })().call();
+        setShowCreateForm(false);
+        return String(count);
+      });
+    },
+    [contract, run, selected],
+  );
 
   return (
     <div className="min-h-full bg-paper text-ink">
@@ -207,7 +274,7 @@ export default function App() {
                 placeholder="id"
               />
               <button
-                onClick={() => run("Reload agreement", loadAgreement)}
+                onClick={() => loadAgreement()}
                 className="rounded border border-copper bg-copper px-3 py-1 text-sm text-white transition-transform active:scale-[0.97]"
               >
                 Load
@@ -228,55 +295,27 @@ export default function App() {
               )}
             </div>
 
+            {showCreateForm && contract && (
+              <AgreementForm
+                pending={!!pending}
+                onCancel={() => setShowCreateForm(false)}
+                onCreate={createAgreementFromDraft}
+              />
+            )}
+
             {!summary && contract && (
               <div className="space-y-4">
                 <p className="text-sm text-ink-soft">
-                  No agreement loaded. Create a demo agreement below — the client
-                  funds the full escrow in the same transaction.
+                  No agreement is selected. Create an agreement with details supplied by
+                  you, or enter an existing on-chain agreement ID above.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {accounts.length > 0 && (
                     <ActionBtn
-                      label="Create demo agreement (4 ETH escrow, 3 milestones)"
+                      label="New on-chain agreement"
                       primary
                       disabled={!!pending}
-                      onClick={() =>
-                        run("createAgreement", async () => {
-                          const c0 = contract ?? ({} as never);
-                          const tx = await (c0.methods.createAgreement as unknown as (
-                            a0: unknown, a1: unknown, a2: unknown, a3: unknown, a4: unknown
-                          ) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(
-                              "Website rebuild",
-                              "Full rebuild of the marketing site in three milestones.",
-                              accounts[2] ?? accounts[0],
-                              ["Design mockups", "Frontend implementation", "QA and handover"],
-                              [
-                                Web3.utils.toWei("1", "ether"),
-                                Web3.utils.toWei("2", "ether"),
-                                Web3.utils.toWei("1", "ether"),
-                              ],
-                          );
-                          const receipt = await tx.send({
-                              from: selected,
-                              value: Web3.utils.toWei("4", "ether"),
-                            });
-                          const events = (receipt as never) as {
-                            events?: {
-                              AgreementCreated?: { returnValues: { id: string } };
-                            };
-                          };
-                          const created =
-                            events.events?.AgreementCreated?.returnValues?.id;
-                          if (created) {
-                            setAgreementId(created);
-                          } else {
-                            await loadAgreement();
-                            setAgreementId(
-                              String(Number(agreementId) + 1),
-                            );
-                          }
-                        })
-                      }
+                      onClick={() => setShowCreateForm(true)}
                     />
                   )}
                 </div>
@@ -327,34 +366,13 @@ export default function App() {
                   </ul>
                 </div>
 
-                {/* Actions */}
-                <div className="flex flex-wrap gap-2 border-t border-line pt-3">
-                  {isClient && summary.state === 2n && (
-                    <ActionBtn
-                      label={`Create agreement (demo preset)`}
+                  {/* Actions */}
+                  <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+                    {isClient && summary.state === 2n && (
+                      <ActionBtn
+                      label="New on-chain agreement"
                       disabled={!!pending}
-                      onClick={() =>
-                        run("createAgreement", async () => {
-                          // preset: 3 milestones funded in one tx
-                          const c0 = contract ?? ({} as never);
-                          const tx = await (c0.methods.createAgreement as unknown as (
-                            a0: unknown, a1: unknown, a2: unknown, a3: unknown, a4: unknown
-                          ) => Promise<{ send: (o: unknown) => Promise<unknown> }>)(
-                              "Website rebuild",
-                              "Full rebuild of the marketing site in three milestones.",
-                              isFreelancer ? selected : accounts[2] ?? selected,
-                              ["Design mockups", "Frontend implementation", "QA and handover"],
-                              [Web3.utils.toWei("1", "ether"), Web3.utils.toWei("2", "ether"), Web3.utils.toWei("1", "ether")],
-                          );
-                          const receipt = await tx.send({
-                              from: selected,
-                              value: Web3.utils.toWei("4", "ether"),
-                            });
-                          const e = receipt as never;
-                          const created = (e as { AgreementCreated?: { returnValues: { id: string } } })?.AgreementCreated?.returnValues?.id;
-                          if (created) setAgreementId(created);
-                        })
-                      }
+                      onClick={() => setShowCreateForm(true)}
                     />
                   )}
                   {isClient && (summary.state === 0n || summary.state === 1n) && summary.escrowed < summary.total && (
@@ -390,7 +408,7 @@ export default function App() {
                       )}
                     </>
                   )}
-                  {isClient && summary.state === 2n && (
+                  {isClient && summary.state === 2n && !disputed && (
                     <>
                       {milestones.map(
                         (m, i) =>
@@ -499,7 +517,7 @@ export default function App() {
               </div>
             ) : (
               <p className="text-sm text-ink-soft">
-                Load an agreement to see its ledger. Create one with the button above.
+                Select an on-chain agreement ID or create one using your own agreement data.
               </p>
             )}
           </div>
@@ -556,9 +574,123 @@ export default function App() {
       </main>
 
       <footer className="border-t border-line py-4 text-center font-mono text-[11px] text-ink-soft">
-        MilestoneEscrow · Solidity 0.8.24 · pull-payment pattern · 16 Hardhat tests passing
+        Local Hardhat runtime · simulated development ETH · Solidity 0.8.24 · 18 Hardhat tests passing
       </footer>
     </div>
+  );
+}
+
+function AgreementForm({
+  pending,
+  onCancel,
+  onCreate,
+}: {
+  pending: boolean;
+  onCancel: () => void;
+  onCreate: (draft: AgreementDraft) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [freelancer, setFreelancer] = useState("");
+  const [initialFunding, setInitialFunding] = useState("");
+  const [milestones, setMilestones] = useState<DraftMilestone[]>([{ title: "", amount: "" }]);
+  const [error, setError] = useState("");
+
+  const updateMilestone = (index: number, field: keyof DraftMilestone, value: string) => {
+    setMilestones((current) => current.map((milestone, i) => (
+      i === index ? { ...milestone, [field]: value } : milestone
+    )));
+  };
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const cleanedMilestones = milestones.map((milestone) => ({
+      title: milestone.title.trim(),
+      amount: milestone.amount.trim(),
+    }));
+    if (!title.trim() || !description.trim() || !freelancer.trim() || !initialFunding.trim()) {
+      setError("Enter an agreement title, description, freelancer address, initial escrow amount, and at least one milestone.");
+      return;
+    }
+    if (!Web3.utils.isAddress(freelancer.trim())) {
+      setError("Enter a valid freelancer wallet address for the connected network.");
+      return;
+    }
+    if (cleanedMilestones.some((milestone) => !milestone.title || !milestone.amount)) {
+      setError("Every milestone requires a title and ETH amount.");
+      return;
+    }
+    try {
+      const total = cleanedMilestones.reduce(
+        (sum, milestone) => sum + BigInt(Web3.utils.toWei(milestone.amount, "ether")),
+        0n,
+      );
+      const deposit = BigInt(Web3.utils.toWei(initialFunding, "ether"));
+      if (total === 0n || deposit === 0n || deposit > total) {
+        setError("Initial escrow must be greater than zero and cannot exceed the total milestone amount.");
+        return;
+      }
+    } catch {
+      setError("Use valid positive ETH amounts (for example, 0.25 or 1.5).");
+      return;
+    }
+    setError("");
+    onCreate({ title, description, freelancer, initialFunding, milestones: cleanedMilestones });
+  };
+
+  return (
+    <form onSubmit={submit} className="mb-4 space-y-4 border border-copper bg-paper p-4">
+      <div>
+        <h3 className="font-semibold">Create an on-chain agreement</h3>
+        <p className="mt-1 text-xs text-ink-soft">
+          Every value below is supplied by you and written to the connected blockchain after confirmation. On this local runtime, accounts and ETH are simulated development data.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="space-y-1 text-xs font-medium">
+          <span>Agreement title</span>
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Brand website build" className="w-full rounded border border-line bg-white px-2 py-1.5 text-sm" />
+        </label>
+        <label className="space-y-1 text-xs font-medium">
+          <span>Freelancer wallet address</span>
+          <input value={freelancer} onChange={(event) => setFreelancer(event.target.value)} placeholder="0x…" className="w-full rounded border border-line bg-white px-2 py-1.5 font-mono text-sm" />
+        </label>
+      </div>
+      <label className="block space-y-1 text-xs font-medium">
+        <span>Description</span>
+        <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe the agreed deliverables and acceptance criteria." className="min-h-20 w-full rounded border border-line bg-white px-2 py-1.5 text-sm" />
+      </label>
+      <label className="block max-w-xs space-y-1 text-xs font-medium">
+        <span>Initial escrow funding (ETH)</span>
+        <input value={initialFunding} onChange={(event) => setInitialFunding(event.target.value)} inputMode="decimal" placeholder="0.00" className="w-full rounded border border-line bg-white px-2 py-1.5 font-mono text-sm" />
+      </label>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-soft">Milestones</h4>
+          <button type="button" onClick={() => setMilestones((current) => [...current, { title: "", amount: "" }])} className="text-xs font-medium text-copper hover:text-copper-strong">
+            Add milestone
+          </button>
+        </div>
+        {milestones.map((milestone, index) => (
+          <div key={index} className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
+            <input value={milestone.title} onChange={(event) => updateMilestone(index, "title", event.target.value)} placeholder={`Milestone ${index + 1} title`} className="rounded border border-line bg-white px-2 py-1.5 text-sm" />
+            <input value={milestone.amount} onChange={(event) => updateMilestone(index, "amount", event.target.value)} inputMode="decimal" placeholder="ETH amount" className="rounded border border-line bg-white px-2 py-1.5 font-mono text-sm" />
+            <button type="button" onClick={() => setMilestones((current) => current.length > 1 ? current.filter((_, i) => i !== index) : current)} disabled={milestones.length === 1} className="rounded border border-line px-2 py-1 text-xs text-ink-soft disabled:opacity-40">
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      {error && <p className="text-xs text-amber-warn">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={pending} className="rounded border border-copper-strong bg-copper px-3 py-1.5 text-sm text-white transition-transform active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50">
+          Create agreement on-chain
+        </button>
+        <button type="button" onClick={onCancel} disabled={pending} className="rounded border border-line bg-paper-2 px-3 py-1.5 text-sm text-ink disabled:cursor-not-allowed disabled:opacity-50">
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -618,7 +750,7 @@ function ImportKeyButton({
           setKey(e.target.value);
           setError("");
         }}
-        placeholder="Paste a hardhat-node private key to demo"
+        placeholder="Paste a local development private key"
         className="rounded border border-line bg-paper px-2 py-1 font-mono text-xs"
       />
       {error && <span className="text-xs text-amber-warn">{error}</span>}
@@ -631,7 +763,7 @@ function ImportKeyButton({
             web3.eth.defaultAccount = acc.address;
             onImported(acc.address);
           } catch {
-            setError("Invalid key — use one of the hardhat node accounts.");
+            setError("Invalid key — use an account from your local development node.");
           }
         }}
         className="w-fit rounded border border-copper bg-copper px-3 py-1 text-sm text-white transition-transform active:scale-[0.97]"
@@ -639,7 +771,7 @@ function ImportKeyButton({
         Import key
       </button>
       <span className="text-[10px] text-ink-soft">
-        Local demo only — never paste real keys into a browser.
+        Local development only — never paste a real wallet key into a browser.
       </span>
     </div>
   );
@@ -654,7 +786,10 @@ async function getAnyWeb3(): Promise<Web3 | null> {
     }
   }
   try {
-    const w = new Web3("http://localhost:8545");
+    const rpcUrl = typeof window === "undefined"
+      ? "http://localhost:8545"
+      : `${window.location.origin}/rpc`;
+    const w = new Web3(rpcUrl);
     await w.eth.getChainId();
     return w;
   } catch {

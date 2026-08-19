@@ -55,6 +55,7 @@ contract MilestoneEscrow {
     event AgreementDisputed(uint256 indexed id, address indexed raisedBy);
     event AgreementReleased(uint256 indexed id, uint256 amount);
     event AgreementRefunded(uint256 indexed id, uint256 amount);
+    event OverpaymentCredited(uint256 indexed id, address indexed client, uint256 amount);
     event FundsWithdrawn(address indexed to, uint256 amount);
 
     error OnlyClient();
@@ -67,6 +68,7 @@ contract MilestoneEscrow {
     error MilestoneMismatch();
     error EmptyAgreement();
     error MilestoneOutOfRange();
+    error AgreementNotFound();
     error AlreadyDisputed();
     error Reentrant();
     error NothingToWithdraw();
@@ -90,6 +92,13 @@ contract MilestoneEscrow {
 
     modifier inState(uint256 _id, AgreementState _state) {
         if (agreements[_id].state != _state) revert InvalidState();
+        _;
+    }
+
+    /// @dev A raised dispute freezes client-controlled settlement actions until
+    /// a future arbitration/resolution mechanism is introduced.
+    modifier notDisputed(uint256 _id) {
+        if (agreements[_id].disputed) revert InvalidState();
         _;
     }
 
@@ -137,8 +146,14 @@ contract MilestoneEscrow {
         return id;
     }
 
-    /// @notice Fund an existing agreement. Overpayment is credited as escrow.
-    function fundAgreement(uint256 _id) external payable onlyClient(_id) {
+    /// @notice Fund an existing agreement. Any amount above the outstanding
+    /// balance is credited back to the client for withdrawal.
+    function fundAgreement(uint256 _id)
+        external
+        payable
+        onlyClient(_id)
+        inState(_id, AgreementState.Created)
+    {
         if (msg.value == 0) revert ZeroAmount();
         _fund(_id);
     }
@@ -168,6 +183,7 @@ contract MilestoneEscrow {
         external
         onlyClient(_id)
         inState(_id, AgreementState.Active)
+        notDisputed(_id)
         nonReentrant
     {
         Milestone storage m = _milestone(_id, _index);
@@ -195,6 +211,7 @@ contract MilestoneEscrow {
         external
         onlyClient(_id)
         inState(_id, AgreementState.Active)
+        notDisputed(_id)
     {
         Milestone storage m = _milestone(_id, _index);
         if (m.state != MilestoneState.Completed) revert InvalidState();
@@ -217,6 +234,7 @@ contract MilestoneEscrow {
         external
         onlyClient(_id)
         inState(_id, AgreementState.Active)
+        notDisputed(_id)
         nonReentrant
     {
         Agreement storage a = agreements[_id];
@@ -252,6 +270,7 @@ contract MilestoneEscrow {
             bool disputed
         )
     {
+        if (_id == 0 || _id > agreementCount) revert AgreementNotFound();
         Agreement storage a = agreements[_id];
         return (
             a.title,
@@ -284,9 +303,19 @@ contract MilestoneEscrow {
 
     function _fund(uint256 _id) internal {
         Agreement storage a = agreements[_id];
-        a.escrowed += msg.value;
-        emit EscrowFunded(_id, msg.sender, msg.value);
-        if (a.escrowed >= a.total && a.state == AgreementState.Created) {
+        uint256 outstanding = a.total - a.escrowed;
+        uint256 accepted = msg.value > outstanding ? outstanding : msg.value;
+        uint256 surplus = msg.value - accepted;
+
+        a.escrowed += accepted;
+        emit EscrowFunded(_id, msg.sender, accepted);
+
+        if (surplus > 0) {
+            balances[a.client] += surplus;
+            emit OverpaymentCredited(_id, a.client, surplus);
+        }
+
+        if (a.escrowed == a.total && a.state == AgreementState.Created) {
             a.state = AgreementState.Active;
         }
     }

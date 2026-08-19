@@ -4,7 +4,11 @@ cache/
 types/
 coverage/
 .env
+.env.*
 .env.local
+*.pem
+*.key
 *.log
 dist/
+.manus-logs/
 .DS_Store

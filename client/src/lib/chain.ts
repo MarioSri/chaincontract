@@ -33,7 +33,10 @@ export async function getWeb3(): Promise<Web3 | null> {
     }
   }
   try {
-    return new Web3("http://localhost:8545");
+    const rpcUrl = typeof window === "undefined"
+      ? "http://localhost:8545"
+      : `${window.location.origin}/rpc`;
+    return new Web3(rpcUrl);
   } catch {
     return null;
   }

@@ -53,6 +53,14 @@ describe("MilestoneEscrow", () => {
         .withArgs(2n, client.address, freelancer.address, TOTAL);
     });
 
+    it("rejects reads for an agreement id that has not been created", async () => {
+      const { escrow } = await deployFixture();
+      await expect(escrow.getAgreement(99n)).to.be.revertedWithCustomError(
+        escrow,
+        "AgreementNotFound",
+      );
+    });
+
     it("rejects mismatched milestone titles and amounts", async () => {
       const { escrow, client, freelancer } = await deployFixture();
       await expect(
@@ -244,6 +252,23 @@ describe("MilestoneEscrow", () => {
         escrow.connect(outsider).dispute(1n),
       ).to.be.revertedWithCustomError(escrow, "OnlyClientOrFreelancer");
     });
+
+    it("freezes settlement actions after a dispute", async () => {
+      const { escrow, client, freelancer } = await deployFixture();
+      await escrow.connect(freelancer).completeMilestone(1n, 0n);
+      await escrow.connect(client).dispute(1n);
+
+      await expect(
+        escrow.connect(client).approveMilestone(1n, 0n),
+      ).to.be.revertedWithCustomError(escrow, "InvalidState");
+      await expect(
+        escrow.connect(client).requestRevision(1n, 0n),
+      ).to.be.revertedWithCustomError(escrow, "InvalidState");
+      await expect(escrow.connect(client).abort(1n)).to.be.revertedWithCustomError(
+        escrow,
+        "InvalidState",
+      );
+    });
   });
 
   describe("withdrawals and edge cases", () => {
@@ -256,29 +281,54 @@ describe("MilestoneEscrow", () => {
     });
 
     it("rejects funding with zero value", async () => {
-      const { escrow, client } = await deployFixture();
-      await expect(escrow.connect(client).fundAgreement(1n, { value: 0n })).to.be.revertedWithCustomError(
+      const { escrow, client, freelancer } = await deployFixture();
+      await escrow
+        .connect(client)
+        .createAgreement("U", "u", freelancer.address, TITLES, AMOUNTS, { value: 0n });
+      await expect(escrow.connect(client).fundAgreement(2n, { value: 0n })).to.be.revertedWithCustomError(
         escrow,
         "ZeroAmount",
       );
     });
 
-    it("blocks non-clients from funding and credits overpayment", async () => {
+    it("blocks non-clients from funding and returns overpayment through the pull-payment balance", async () => {
       const { escrow, outsider } = await deployFixture();
       await expect(
         escrow.connect(outsider).fundAgreement(1n, { value: parseEther("1") }),
       ).to.be.revertedWithCustomError(escrow, "OnlyClient");
-      // fundAgreement is client-only, so use a fresh agreement owned by the
-      // outsider to exercise overpayment crediting
+
       const [client, freelancer] = await ethers.getSigners();
-      await escrow
+      const Escrow = await ethers.getContractFactory("MilestoneEscrow");
+      const overpaymentEscrow = await Escrow.deploy();
+      await overpaymentEscrow
         .connect(client)
         .createAgreement("O", "o", freelancer.address, TITLES, AMOUNTS, { value: parseEther("2") });
-      const oid = 2n;
-      await escrow.connect(client).fundAgreement(oid, { value: TOTAL + parseEther("10") });
-      const a = await escrow.getAgreement(oid);
-      expect(a.escrowed).to.equal(parseEther("2") + TOTAL + parseEther("10"));
+      await expect(
+        overpaymentEscrow.connect(client).fundAgreement(1n, { value: TOTAL + parseEther("10") }),
+      )
+        .to.emit(overpaymentEscrow, "EscrowFunded")
+        .withArgs(1n, client.address, parseEther("2"))
+        .and.to.emit(overpaymentEscrow, "OverpaymentCredited")
+        .withArgs(1n, client.address, parseEther("12"));
+
+      const a = await overpaymentEscrow.getAgreement(1n);
+      expect(a.escrowed).to.equal(TOTAL);
       expect(a.state).to.equal(2n); // Active — fully funded
+      expect(await overpaymentEscrow.withdrawable(client.address)).to.equal(parseEther("12"));
+
+      await expect(
+        overpaymentEscrow.connect(client).fundAgreement(1n, { value: parseEther("1") }),
+      ).to.be.revertedWithCustomError(overpaymentEscrow, "InvalidState");
+
+      await overpaymentEscrow.connect(client).withdraw();
+      expect(await ethers.provider.getBalance(await overpaymentEscrow.getAddress())).to.equal(TOTAL);
+
+      for (let i = 0n; i < 3n; i++) {
+        await overpaymentEscrow.connect(freelancer).completeMilestone(1n, i);
+        await overpaymentEscrow.connect(client).approveMilestone(1n, i);
+      }
+      await overpaymentEscrow.connect(freelancer).withdraw();
+      expect(await ethers.provider.getBalance(await overpaymentEscrow.getAddress())).to.equal(0n);
     });
   });
 });
