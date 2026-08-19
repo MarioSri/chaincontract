@@ -1,9 +1,17 @@
-import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
-
-
+import hardhatEthersPlugin from "@nomicfoundation/hardhat-ethers";
+import hardhatEthersChaiMatchersPlugin from "@nomicfoundation/hardhat-ethers-chai-matchers";
+import hardhatMochaPlugin from "@nomicfoundation/hardhat-mocha";
+import hardhatNetworkHelpersPlugin from "@nomicfoundation/hardhat-network-helpers";
+import hardhatTypechainPlugin from "@nomicfoundation/hardhat-typechain";
 /** @type {import("hardhat/config").HardhatUserConfig} */
 export default {
-  plugins: [hardhatToolboxMochaEthersPlugin],
+  plugins: [
+    hardhatEthersPlugin,
+    hardhatEthersChaiMatchersPlugin,
+    hardhatMochaPlugin,
+    hardhatNetworkHelpersPlugin,
+    hardhatTypechainPlugin,
+  ],
   mocha: {
     spec: "test/**/*.test.js",
   },
